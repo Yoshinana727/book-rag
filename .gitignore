@@ -1,0 +1,13 @@
+# 著作権のあるPDF本文・生成インデックス・評価結果はGit管理外
+data/input/*
+!data/input/.gitkeep
+!data/input/sample_aozora.pdf
+data/index/*
+!data/index/.gitkeep
+results/*
+!results/.gitkeep
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

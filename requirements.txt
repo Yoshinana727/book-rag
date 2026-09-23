@@ -1,0 +1,13 @@
+# torch は CPU 版を先に入れる（README 参照）:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.0
+torch==2.14.0
+sentence-transformers==6.1.0
+transformers==5.17.0
+tokenizers==0.23.2
+safetensors==0.8.0
+numpy==2.2.6
+pypdf==6.19.0
+
+# サンプルPDF生成・テスト用
+reportlab==5.0.1
+pytest==9.1.1
