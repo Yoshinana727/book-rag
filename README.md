@@ -27,7 +27,7 @@ pip install -r requirements.txt
 動作確認（モデルのダウンロードなしで実行できます）:
 
 ```bash
-pytest
+python -m pytest
 ```
 
 ## 2. PDF の登録（ingest）
