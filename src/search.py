@@ -48,7 +48,11 @@ def search_indexes(
         raise BookRagError("--top-k は 1 以上を指定してください")
     candidates: list[tuple[float, BookIndex, int]] = []
     for index in indexes:
-        scores = index.embeddings @ query_vec  # 両者正規化済みなので内積 = コサイン類似度
+        # 両者正規化済みなので内積 = コサイン類似度。
+        # float64 で計算する（macOS の Accelerate BLAS は float32 の matmul で誤った RuntimeWarning を出す）
+        scores = np.ascontiguousarray(index.embeddings, dtype=np.float64) @ np.asarray(
+            query_vec, dtype=np.float64
+        )
         k = min(top_k, len(scores))
         top_idx = np.argpartition(-scores, k - 1)[:k] if k < len(scores) else np.arange(len(scores))
         candidates.extend((float(scores[i]), index, int(i)) for i in top_idx)
