@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image, ImageDraw
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
@@ -61,6 +62,25 @@ def make_pdf(path: Path, pages: list[str | None]) -> Path:
         c.showPage()
     c.save()
     return path
+
+
+def make_image_pdf(path: Path, pages: int = 2) -> Path:
+    """文字情報を持たない、画像のみの PDF（スキャンPDF相当）を作る."""
+    img_path = path.with_suffix(".png")
+    img = Image.new("L", (400, 600), 255)
+    ImageDraw.Draw(img).rectangle((50, 50, 350, 550), outline=0, width=3)
+    img.save(img_path)
+    c = canvas.Canvas(str(path), pagesize=A4)
+    for _ in range(pages):
+        c.drawImage(str(img_path), 50, 100, width=400, height=600)
+        c.showPage()
+    c.save()
+    return path
+
+
+@pytest.fixture
+def image_pdf(tmp_path: Path) -> Path:
+    return make_image_pdf(tmp_path / "scan.pdf")
 
 
 @pytest.fixture

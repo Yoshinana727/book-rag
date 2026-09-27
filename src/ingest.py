@@ -1,7 +1,10 @@
 """PDF を読み込み、ページ単位で本文を抽出 → チャンク化 → ベクトル化 → 保存する.
 
 usage: python -m src.ingest <pdf_path> [--chunk-size N] [--chunk-overlap N]
-                            [--model NAME] [--index-dir DIR] [--verbose]
+                            [--model NAME] [--index-dir DIR]
+                            [--ocr auto|off|force] [--ocr-lang auto|jpn|jpn_vert] [--verbose]
+
+本文が取れないページ（スキャン画像など）は --ocr auto（既定）で Tesseract により OCR する。
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from .common import (
     save_index,
     setup_logging,
 )
+from .ocr import DEFAULT_OCR_LANG, DEFAULT_OCR_MODE, OCR_LANGS, OCR_MODES, PageOcr
 
 # チャンク分割時に優先する境界（後ろにあるものほど弱い境界）
 _BOUNDARY_PATTERN = re.compile(r"[。！？\n]|[.!?](?=\s)")
@@ -48,6 +52,7 @@ class ExtractionResult:
     total_pages: int
     pages: list[PageText]
     skipped_pages: list[int]
+    ocr_pages: list[int] | None = None
 
 
 def _normalize_text(text: str) -> str:
@@ -59,8 +64,29 @@ def _normalize_text(text: str) -> str:
     return text.strip()
 
 
-def extract_pages(pdf_path: Path) -> ExtractionResult:
-    """PDF からページごとの本文を抽出する. 空ページは除外し警告を記録する."""
+def _has_image(page) -> bool:
+    try:
+        resources = page.get("/Resources") or {}
+        xobjects = resources.get("/XObject")
+        if xobjects is None:
+            return False
+        xobjects = xobjects.get_object()
+        return any(xobjects[name].get_object().get("/Subtype") == "/Image" for name in xobjects)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def extract_pages(
+    pdf_path: Path,
+    ocr_mode: str = DEFAULT_OCR_MODE,
+    ocr_lang: str = DEFAULT_OCR_LANG,
+) -> ExtractionResult:
+    """PDF からページごとの本文を抽出する. 空ページは除外し警告を記録する.
+
+    ocr_mode: auto=本文が取れないページのみ OCR / off=OCR しない / force=全ページ OCR
+    """
+    if ocr_mode not in OCR_MODES:
+        raise BookRagError(f"--ocr は {', '.join(OCR_MODES)} のいずれかを指定してください")
     if not pdf_path.exists():
         raise BookRagError(f"PDFファイルが見つかりません: {pdf_path}")
     if not pdf_path.is_file():
@@ -79,16 +105,38 @@ def extract_pages(pdf_path: Path) -> ExtractionResult:
     except PdfReadError as e:
         raise BookRagError(f"PDFとして読み込めません（破損または非対応形式）: {pdf_path} ({e})") from e
 
+    ocr: PageOcr | None = None
+    ocr_unavailable = False
+    if ocr_mode == "force":
+        ocr = PageOcr(pdf_path, ocr_lang)
+
     pages: list[PageText] = []
     skipped: list[int] = []
+    ocr_pages: list[int] = []
     for i, page in enumerate(reader.pages, start=1):
-        try:
-            raw = page.extract_text() or ""
-        except Exception as e:  # noqa: BLE001
-            logger.warning("ページ %d のテキスト抽出に失敗したため除外します: %s", i, e)
-            skipped.append(i)
-            continue
-        text = _normalize_text(raw)
+        text = ""
+        if ocr_mode != "force":
+            try:
+                text = _normalize_text(page.extract_text() or "")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ページ %d のテキスト抽出に失敗しました: %s", i, e)
+        # auto: 文字が無く画像を含むページ（スキャン画像）のみ OCR する。白紙ページは対象外
+        needs_ocr = ocr_mode == "force" or (ocr_mode == "auto" and not text and _has_image(page))
+        if needs_ocr and not ocr_unavailable:
+            if ocr is None:
+                logger.info("本文が取れないページがあるため OCR を実行します（時間がかかります）")
+                try:
+                    ocr = PageOcr(pdf_path, ocr_lang)
+                except BookRagError as e:
+                    if ocr_mode == "force":
+                        raise
+                    logger.warning("OCR をスキップします: %s", e)
+                    ocr_unavailable = True
+            if ocr is not None:
+                logger.debug("ページ %d を OCR 中", i)
+                text = _normalize_text(ocr.ocr_page(i))
+                if text:
+                    ocr_pages.append(i)
         if not text:
             logger.warning("ページ %d は本文を抽出できなかったため除外します", i)
             skipped.append(i)
@@ -96,12 +144,20 @@ def extract_pages(pdf_path: Path) -> ExtractionResult:
         pages.append(PageText(page=i, text=text))
 
     if not pages:
-        raise BookRagError(
-            f"本文を1ページも抽出できませんでした: {pdf_path}\n"
-            "画像のみのPDF（OCRが必要）は本MVPの対象外です。"
+        hint = (
+            "画像のみのPDFの場合は --ocr auto（既定）で OCR を試してください。"
+            if ocr_mode == "off"
+            else "OCR でも文字を認識できませんでした。画像の向き・解像度を確認してください。"
         )
+        raise BookRagError(f"本文を1ページも抽出できませんでした: {pdf_path}\n{hint}")
+    if ocr_pages:
+        logger.info("OCR で本文を取得したページ: %d ページ", len(ocr_pages))
     return ExtractionResult(
-        book=pdf_path.name, total_pages=total_pages, pages=pages, skipped_pages=skipped
+        book=pdf_path.name,
+        total_pages=total_pages,
+        pages=pages,
+        skipped_pages=skipped,
+        ocr_pages=ocr_pages,
     )
 
 
@@ -201,6 +257,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--chunk-overlap", type=int, default=DEFAULT_CHUNK_OVERLAP, help="チャンク間の重複文字数")
     p.add_argument("--model", default=DEFAULT_MODEL, help="Embeddingモデル名")
     p.add_argument("--index-dir", type=Path, default=DEFAULT_INDEX_DIR, help="インデックス保存先")
+    p.add_argument(
+        "--ocr",
+        choices=OCR_MODES,
+        default=DEFAULT_OCR_MODE,
+        help="auto: 本文が取れないページのみOCR（既定） / off: OCRしない / force: 全ページOCR",
+    )
+    p.add_argument(
+        "--ocr-lang",
+        choices=OCR_LANGS,
+        default=DEFAULT_OCR_LANG,
+        help="OCR言語. auto: 最初のOCRページで横書き(jpn)/縦書き(jpn_vert)を自動判定（既定）",
+    )
     p.add_argument("--verbose", action="store_true")
     return p
 
@@ -211,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # モデルロード前に入力を検証し、不備があれば即座にエラーを返す
         split_text("x" * (args.chunk_size + 1), args.chunk_size, args.chunk_overlap)
-        extraction = extract_pages(args.pdf_path)
+        extraction = extract_pages(args.pdf_path, args.ocr, args.ocr_lang)
         embedder = Embedder(args.model)
         index = ingest(
             args.pdf_path, embedder, args.index_dir, args.chunk_size, args.chunk_overlap, extraction
@@ -226,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"全ページ数  : {m.total_pages}")
     print(f"処理ページ数: {m.processed_pages}")
     print(f"除外ページ数: {m.skipped_pages}" + (f" {m.skipped_page_numbers}" if m.skipped_pages else ""))
+    print(f"OCRページ数  : {len(extraction.ocr_pages or [])}")
     print(f"生成チャンク: {m.chunk_count}")
     print(f"モデル      : {m.model}")
     return 0

@@ -8,6 +8,11 @@ safetensors==0.8.0
 numpy==2.2.6
 pypdf==6.19.0
 
+# OCR（スキャン画像PDF用）。Tesseract 本体は別途インストール（README 参照）
+pypdfium2==5.13.0
+pytesseract==0.3.13
+pillow==12.3.0
+
 # サンプルPDF生成・テスト用
 reportlab==5.0.1
 pytest==9.1.1

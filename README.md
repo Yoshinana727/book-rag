@@ -4,7 +4,8 @@ PDF形式の書籍を取り込み、質問文と意味的に近い本文を **�
 
 - Embedding: [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small)（日本語対応・ローカル実行・API課金なし）
 - ベクトルストア: NumPy ファイル（外部DB不要）
-- CLI のみ（LLMによる回答生成 / Web UI / 認証 / OCR は対象外）
+- スキャン画像 PDF（スマホで撮った本など）は Tesseract による OCR で取り込み可能
+- CLI のみ（LLMによる回答生成 / Web UI / 認証は対象外）
 
 ## 動作環境
 
@@ -19,9 +20,21 @@ cd book-rag
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-# torch は CPU 版を先にインストール（GPU版は 2GB 超になるため）
+# torch は CPU 版を先にインストール（Linux/Windows。GPU版は 2GB 超になるため）
 pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.0
+# macOS の場合は index-url なしで: pip install torch==2.14.0
 pip install -r requirements.txt
+```
+
+スキャン画像 PDF を OCR で取り込む場合は Tesseract 本体と日本語データも入れます（文字情報を持つ PDF だけを扱うなら不要）:
+
+```bash
+# macOS
+brew install tesseract tesseract-lang
+# Ubuntu
+sudo apt install tesseract-ocr tesseract-ocr-jpn tesseract-ocr-jpn-vert
+
+tesseract --list-langs   # jpn / jpn_vert / osd が含まれていれば OK
 ```
 
 動作確認（モデルのダウンロードなしで実行できます）:
@@ -29,6 +42,8 @@ pip install -r requirements.txt
 ```bash
 python -m pytest
 ```
+
+> `which python` / `python -m pip list` で venv 内の Python とパッケージが使われていることを確認してください。`ModuleNotFoundError: No module named 'numpy'` が出る場合は venv 外の `pytest` を実行しているか、`pip install` が失敗しています。
 
 ## 2. PDF の登録（ingest）
 
@@ -51,6 +66,7 @@ INFO: インデックス保存先: .../data/index/your_book
 全ページ数  : 10
 処理ページ数: 9
 除外ページ数: 1 [2]
+OCRページ数  : 0
 生成チャンク: 29
 モデル      : intfloat/multilingual-e5-small
 ```
@@ -61,6 +77,18 @@ INFO: インデックス保存先: .../data/index/your_book
 | `--chunk-overlap` | 100 | 隣接チャンク間の重複文字数 |
 | `--model` | `intfloat/multilingual-e5-small` | Embedding モデル（Hugging Face のモデル名） |
 | `--index-dir` | `data/index` | インデックス保存先 |
+| `--ocr` | `auto` | `auto`: 文字が取れない画像ページのみ OCR / `off`: OCR しない / `force`: 全ページ OCR |
+| `--ocr-lang` | `auto` | `auto`: 最初の OCR ページで横書き(`jpn`)/縦書き(`jpn_vert`)を自動判定 |
+
+### スキャン画像 PDF（OCR）
+
+iPhone のメモ/ファイルの「書類をスキャン」などで作った PDF は文字情報を持たない画像のみの PDF です。`--ocr auto`（既定）ではこうしたページを自動で OCR します（Tesseract が未導入の場合は警告を出して除外）。
+
+- 1ページあたり数秒かかります（300ページで 15〜30 分程度）
+- 横向きに撮ったページは自動で回転補正します（`osd` データが必要）
+- 認識精度を上げるコツ: 本を平らに開き、**1ページごとに**、ページ全体が真っ直ぐ入るように撮影する。見開きで撮ると左右の本文が混ざり、出典ページもずれます
+- スキャン設定は「白黒」・「グレースケール」にするとファイルサイズが大幅に小さくなり、転送も速くなります
+- すでに文字情報を持つ PDF（Adobe Scan の OCR 済みなど）はそのまま読み込まれ、OCR は走りません
 
 生成物（`data/index/<書籍名>/`）:
 
@@ -169,7 +197,9 @@ python -m src.evaluate --dataset datasets/my_book.json --book my_book.pdf --outp
 | 症状 | 原因・対処 |
 |---|---|
 | `エラー: PDFファイルが見つかりません` | パスを確認。`data/input/` からの相対パスまたは絶対パスを指定 |
-| `エラー: 本文を1ページも抽出できませんでした` | スキャン画像のみの PDF（OCR が必要）は対象外 |
+| `エラー: 本文を1ページも抽出できませんでした` | スキャン画像 PDF の場合は Tesseract を導入して `--ocr auto` で実行。OCR 済みでも出る場合は画像の向き・解像度を確認 |
+| `WARNING: OCR をスキップします: OCR には Tesseract が必要です` | `brew install tesseract tesseract-lang`（環境構築参照） |
+| OCR 結果が文字化けしている | 縦書き/横書きの誤判定の可能性。`--ocr-lang jpn_vert`（縦書き）または `--ocr-lang jpn`（横書き）を明示 |
 | `エラー: 暗号化されたPDFは読み込めません` | パスワード保護を解除した PDF を用意 |
 | `エラー: インデックスが1件もありません` | 先に `python -m src.ingest` を実行 |
 | モデルのダウンロードに失敗する | ネットワーク／プロキシを確認。DL 済みモデルは `~/.cache/huggingface/` にキャッシュされ 2 回目以降はオフラインで動作 |
@@ -183,6 +213,7 @@ book-rag/
 ├── src/
 │   ├── common.py         # 定数・Embedder・インデックスの保存/読込
 │   ├── ingest.py         # PDF抽出 → チャンク化 → ベクトル化 → 保存
+│   ├── ocr.py            # スキャン画像ページの OCR（Tesseract）
 │   ├── search.py         # 質問のベクトル化 → 類似検索 → 表示
 │   └── evaluate.py       # 評価データで精度測定 → results/ に保存
 ├── scripts/make_sample_pdf.py   # 青空文庫からサンプルPDFを生成
