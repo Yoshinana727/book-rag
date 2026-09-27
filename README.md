@@ -4,7 +4,7 @@ PDF形式の書籍を取り込み、質問文と意味的に近い本文を **�
 
 - Embedding: [`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small)（日本語対応・ローカル実行・API課金なし）
 - ベクトルストア: NumPy ファイル（外部DB不要）
-- スキャン画像 PDF（スマホで撮った本など）は Tesseract による OCR で取り込み可能
+- スキャン画像 PDF（スマホで撮った本など）は OCR で取り込み可能（macOS: Vision / その他: Tesseract）
 - CLI のみ（LLMによる回答生成 / Web UI / 認証は対象外）
 
 ## 動作環境
@@ -26,14 +26,16 @@ pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.0
 pip install -r requirements.txt
 ```
 
-スキャン画像 PDF を OCR で取り込む場合は Tesseract 本体と日本語データも入れます（文字情報を持つ PDF だけを扱うなら不要）:
+スキャン画像 PDF を OCR で取り込む場合は OCR エンジンを入れます（文字情報を持つ PDF だけを扱うなら不要）:
 
 ```bash
-# macOS
-brew install tesseract tesseract-lang
-# Ubuntu
-sudo apt install tesseract-ocr tesseract-ocr-jpn tesseract-ocr-jpn-vert
+# macOS（推奨）: OS 標準の Vision フレームワークを使う。日本語の認識精度が高く高速
+#   ※ requirements.txt に含まれているので macOS では pip install -r requirements.txt で導入済み
+#   別途入れる場合: pip install ocrmac
 
+# Linux など macOS 以外（もしくは macOS で Tesseract を使いたい場合）
+sudo apt install tesseract-ocr tesseract-ocr-jpn tesseract-ocr-jpn-vert   # Ubuntu
+brew install tesseract tesseract-lang                                      # macOS
 tesseract --list-langs   # jpn / jpn_vert / osd が含まれていれば OK
 ```
 
@@ -78,14 +80,17 @@ OCRページ数  : 0
 | `--model` | `intfloat/multilingual-e5-small` | Embedding モデル（Hugging Face のモデル名） |
 | `--index-dir` | `data/index` | インデックス保存先 |
 | `--ocr` | `auto` | `auto`: 文字が取れない画像ページのみ OCR / `off`: OCR しない / `force`: 全ページ OCR |
-| `--ocr-lang` | `auto` | `auto`: 最初の OCR ページで横書き(`jpn`)/縦書き(`jpn_vert`)を自動判定 |
+| `--ocr-engine` | `auto` | `auto`: macOS で ocrmac があれば `vision`、無ければ `tesseract` |
+| `--ocr-lang` | `auto` | Tesseract 用。`auto`: 最初の OCR ページで横書き(`jpn`)/縦書き(`jpn_vert`)を自動判定（Vision では無視） |
 
 ### スキャン画像 PDF（OCR）
 
-iPhone のメモ/ファイルの「書類をスキャン」などで作った PDF は文字情報を持たない画像のみの PDF です。`--ocr auto`（既定）ではこうしたページを自動で OCR します（Tesseract が未導入の場合は警告を出して除外）。
+iPhone のメモ/ファイルの「書類をスキャン」などで作った PDF は文字情報を持たない画像のみの PDF です。`--ocr auto`（既定）ではこうしたページを自動で OCR します（OCR エンジンが未導入の場合は警告を出して除外）。
 
-- 1ページあたり数秒かかります（300ページで 15〜30 分程度）
-- 横向きに撮ったページは自動で回転補正します（`osd` データが必要）
+- OCR エンジンは自動選択されます（ログに `OCR エンジン: Vision (macOS)` / `Tesseract` と出ます）。macOS では Vision の方が誤字が大幅に少なく高速なのでこちらを推奨。比較したい場合は `--ocr-engine tesseract` で強制できます
+- Tesseract は 1ページあたり数秒かかります（300ページで 15〜30 分程度）。Vision はその数分の一
+- 横向きに撮ったページは自動で回転補正します（Tesseract は `osd` データが必要。Vision は文字がほとんど取れない場合に 90/180/270 度回転して再試行）
+- エンジンを変えた場合は再度 `python -m src.ingest` を実行してインデックスを作り直してください
 - 認識精度を上げるコツ: 本を平らに開き、**1ページごとに**、ページ全体が真っ直ぐ入るように撮影する。見開きで撮ると左右の本文が混ざり、出典ページもずれます
 - スキャン設定は「白黒」・「グレースケール」にするとファイルサイズが大幅に小さくなり、転送も速くなります
 - すでに文字情報を持つ PDF（Adobe Scan の OCR 済みなど）はそのまま読み込まれ、OCR は走りません
@@ -198,8 +203,10 @@ python -m src.evaluate --dataset datasets/my_book.json --book my_book.pdf --outp
 |---|---|
 | `エラー: PDFファイルが見つかりません` | パスを確認。`data/input/` からの相対パスまたは絶対パスを指定 |
 | `エラー: 本文を1ページも抽出できませんでした` | スキャン画像 PDF の場合は Tesseract を導入して `--ocr auto` で実行。OCR 済みでも出る場合は画像の向き・解像度を確認 |
-| `WARNING: OCR をスキップします: OCR には Tesseract が必要です` | `brew install tesseract tesseract-lang`（環境構築参照） |
-| OCR 結果が文字化けしている | 縦書き/横書きの誤判定の可能性。`--ocr-lang jpn_vert`（縦書き）または `--ocr-lang jpn`（横書き）を明示 |
+| `WARNING: OCR をスキップします: OCR には Tesseract が必要です` | macOS: `pip install ocrmac` / その他: Tesseract を導入（環境構築参照） |
+| `WARNING: ocrmac が未インストールのため Tesseract を使います` | macOS で Vision を使うには `pip install ocrmac` |
+| OCR の誤字が多い（Tesseract） | macOS なら `--ocr-engine vision` を使う。縦書き/横書きの誤判定の場合は `--ocr-lang jpn_vert` または `--ocr-lang jpn` を明示 |
+| Vision で行の順序が乱れる | 縦書きは右→左、横書きは上→下に座標で並べ直しています。見開き撮影だと左右ページが混ざるので 1ページごとに撮影 |
 | `エラー: 暗号化されたPDFは読み込めません` | パスワード保護を解除した PDF を用意 |
 | `エラー: インデックスが1件もありません` | 先に `python -m src.ingest` を実行 |
 | モデルのダウンロードに失敗する | ネットワーク／プロキシを確認。DL 済みモデルは `~/.cache/huggingface/` にキャッシュされ 2 回目以降はオフラインで動作 |
@@ -213,7 +220,7 @@ book-rag/
 ├── src/
 │   ├── common.py         # 定数・Embedder・インデックスの保存/読込
 │   ├── ingest.py         # PDF抽出 → チャンク化 → ベクトル化 → 保存
-│   ├── ocr.py            # スキャン画像ページの OCR（Tesseract）
+│   ├── ocr.py            # スキャン画像ページの OCR（macOS Vision / Tesseract）
 │   ├── search.py         # 質問のベクトル化 → 類似検索 → 表示
 │   └── evaluate.py       # 評価データで精度測定 → results/ に保存
 ├── scripts/make_sample_pdf.py   # 青空文庫からサンプルPDFを生成

@@ -49,10 +49,12 @@ def search_indexes(
     candidates: list[tuple[float, BookIndex, int]] = []
     for index in indexes:
         # 両者正規化済みなので内積 = コサイン類似度。
-        # float64 で計算する（macOS の Accelerate BLAS は float32 の matmul で誤った RuntimeWarning を出す）
-        scores = np.ascontiguousarray(index.embeddings, dtype=np.float64) @ np.asarray(
-            query_vec, dtype=np.float64
-        )
+        # macOS の Accelerate BLAS は入力が正常でも matmul で誤った RuntimeWarning を出すため抑止し、
+        # 代わりに結果が有限値であることを検証する
+        with np.errstate(all="ignore"):
+            scores = index.embeddings @ query_vec
+        if not np.all(np.isfinite(scores)):
+            raise BookRagError(f"類似度計算で不正な値が出ました（インデックスが壊れている可能性）: {index.meta.book}")
         k = min(top_k, len(scores))
         top_idx = np.argpartition(-scores, k - 1)[:k] if k < len(scores) else np.arange(len(scores))
         candidates.extend((float(scores[i]), index, int(i)) for i in top_idx)

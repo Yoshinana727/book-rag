@@ -8,10 +8,13 @@ safetensors==0.8.0
 numpy==2.2.6
 pypdf==6.19.0
 
-# OCR（スキャン画像PDF用）。Tesseract 本体は別途インストール（README 参照）
+# OCR（スキャン画像PDF用）
 pypdfium2==5.13.0
-pytesseract==0.3.13
 pillow==12.3.0
+# macOS: OS 標準の Vision フレームワーク（高精度・高速）
+ocrmac==1.0.1; sys_platform == "darwin"
+# それ以外 / 明示指定時: Tesseract。本体は別途インストール（README 参照）
+pytesseract==0.3.13
 
 # サンプルPDF生成・テスト用
 reportlab==5.0.1

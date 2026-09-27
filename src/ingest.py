@@ -2,9 +2,11 @@
 
 usage: python -m src.ingest <pdf_path> [--chunk-size N] [--chunk-overlap N]
                             [--model NAME] [--index-dir DIR]
-                            [--ocr auto|off|force] [--ocr-lang auto|jpn|jpn_vert] [--verbose]
+                            [--ocr auto|off|force] [--ocr-lang auto|jpn|jpn_vert]
+                            [--ocr-engine auto|vision|tesseract] [--verbose]
 
-本文が取れないページ（スキャン画像など）は --ocr auto（既定）で Tesseract により OCR する。
+本文が取れないページ（スキャン画像など）は --ocr auto（既定）で OCR する。
+エンジンは macOS では Vision（ocrmac）、それ以外では Tesseract が自動選択される。
 """
 
 from __future__ import annotations
@@ -34,7 +36,15 @@ from .common import (
     save_index,
     setup_logging,
 )
-from .ocr import DEFAULT_OCR_LANG, DEFAULT_OCR_MODE, OCR_LANGS, OCR_MODES, PageOcr
+from .ocr import (
+    DEFAULT_OCR_ENGINE,
+    DEFAULT_OCR_LANG,
+    DEFAULT_OCR_MODE,
+    OCR_ENGINES,
+    OCR_LANGS,
+    OCR_MODES,
+    create_page_ocr,
+)
 
 # チャンク分割時に優先する境界（後ろにあるものほど弱い境界）
 _BOUNDARY_PATTERN = re.compile(r"[。！？\n]|[.!?](?=\s)")
@@ -80,6 +90,7 @@ def extract_pages(
     pdf_path: Path,
     ocr_mode: str = DEFAULT_OCR_MODE,
     ocr_lang: str = DEFAULT_OCR_LANG,
+    ocr_engine: str = DEFAULT_OCR_ENGINE,
 ) -> ExtractionResult:
     """PDF からページごとの本文を抽出する. 空ページは除外し警告を記録する.
 
@@ -105,10 +116,10 @@ def extract_pages(
     except PdfReadError as e:
         raise BookRagError(f"PDFとして読み込めません（破損または非対応形式）: {pdf_path} ({e})") from e
 
-    ocr: PageOcr | None = None
+    ocr = None
     ocr_unavailable = False
     if ocr_mode == "force":
-        ocr = PageOcr(pdf_path, ocr_lang)
+        ocr = create_page_ocr(pdf_path, ocr_lang, ocr_engine)
 
     pages: list[PageText] = []
     skipped: list[int] = []
@@ -126,7 +137,7 @@ def extract_pages(
             if ocr is None:
                 logger.info("本文が取れないページがあるため OCR を実行します（時間がかかります）")
                 try:
-                    ocr = PageOcr(pdf_path, ocr_lang)
+                    ocr = create_page_ocr(pdf_path, ocr_lang, ocr_engine)
                 except BookRagError as e:
                     if ocr_mode == "force":
                         raise
@@ -267,7 +278,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--ocr-lang",
         choices=OCR_LANGS,
         default=DEFAULT_OCR_LANG,
-        help="OCR言語. auto: 最初のOCRページで横書き(jpn)/縦書き(jpn_vert)を自動判定（既定）",
+        help="OCR言語（Tesseract 用）. auto: 最初のOCRページで横書き(jpn)/縦書き(jpn_vert)を自動判定（既定）",
+    )
+    p.add_argument(
+        "--ocr-engine",
+        choices=OCR_ENGINES,
+        default=DEFAULT_OCR_ENGINE,
+        help="OCRエンジン. auto: macOS で ocrmac があれば vision、無ければ tesseract（既定）",
     )
     p.add_argument("--verbose", action="store_true")
     return p
@@ -279,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # モデルロード前に入力を検証し、不備があれば即座にエラーを返す
         split_text("x" * (args.chunk_size + 1), args.chunk_size, args.chunk_overlap)
-        extraction = extract_pages(args.pdf_path, args.ocr, args.ocr_lang)
+        extraction = extract_pages(args.pdf_path, args.ocr, args.ocr_lang, args.ocr_engine)
         embedder = Embedder(args.model)
         index = ingest(
             args.pdf_path, embedder, args.index_dir, args.chunk_size, args.chunk_overlap, extraction
